@@ -1,5 +1,7 @@
 import arcade
 import math
+import pika
+import sys
 
 # --- Константы ---
 SCREEN_WIDTH = 800
@@ -63,12 +65,6 @@ class BallSprite(arcade.Sprite):
             else:
                 self.angle_change = -BALL_TURN_SPEED
 
-
-
-
-
-
-
     def is_off_road(self, road_segments):
         # Проверяем, находится ли машинка вне дороги
         ball_rect = self.get_rect() # Получаем прямоугольник машинки
@@ -79,10 +75,6 @@ class BallSprite(arcade.Sprite):
                 return False  # Машинка на дороге
         return True  # Машинка вне дороги
 
-
-
-import arcade
-import math
 
 class RoadSegment(arcade.Sprite):
     def __init__(self, centerX, centerY, height, color=ROAD_COLOR, width=ROAD_WIDTH):
@@ -102,6 +94,15 @@ class Game(arcade.Window):
         arcade.set_background_color(arcade.color.WHITE)
         self.car_sprite = None
         self.road_segments = arcade.SpriteList()
+
+        # Инициируем RabbitMq
+        #
+        self.timer = 0
+        connection = pika.BlockingConnection(
+        pika.ConnectionParameters(host='localhost'))
+        self.channel = connection.channel()
+        # Определяем эксчэндж, по которому будем передавать сообщения
+        self.channel.exchange_declare(exchange='logs', exchange_type='fanout')   
 
     def setup(self):
         # Инициализация игры
@@ -128,6 +129,15 @@ class Game(arcade.Window):
     def on_update(self, delta_time):
         # Обновление состояния игры
         self.car_sprite.update()
+
+        # Пробуем передать текущие координаты машинки
+        self.timer = self.timer + 1
+        if (self.timer == 20):
+            X = self.car_sprite.center_x
+            Y = self.car_sprite.center_y    
+            message = str(X) + "  " + str(Y)
+            self.channel.basic_publish(exchange='logs', routing_key='', body=message)
+            self.timer = 0
 
 
     def on_key_press(self, key, modifiers):
