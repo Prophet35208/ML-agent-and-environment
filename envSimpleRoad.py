@@ -32,8 +32,7 @@ ROAD_COLOR = arcade.color.GRAY
 
 # Настройки RabbitMQ
 RABBITMQ_HOST = 'localhost'
-AGENT_QUEUE = 'direction_queue'
-ENV_REPLY_QUEUE = 'ball_position_queue'
+ENV_QUEUE = 'env_eueue'
 
 
 
@@ -66,8 +65,8 @@ class MyGame(arcade.Window):
         if (mType == 0):
             x = self.ball_x 
             y = self.ball_y
-            message = {'x': x, 'y': y}
-            self.envConnector.channel.basic_publish(exchange='', routing_key=AGENT_QUEUE, body=json.dumps(message))
+            reply = {'x': x, 'y': y}
+            self.envConnector.sendMessageToAgent(properties, reply)
         if (mType == 1):
             while(self.direction_queue):
                 time.sleep(0.06)
@@ -89,7 +88,9 @@ class MyGame(arcade.Window):
             self.direction_queue.append(dir)
             # После этого отправляем сообщение агенту про следующие координаты
             reply = {'reset': 0, 'x': xAfterStep, 'y': yAfterStep}
-            self.envConnector.channel.basic_publish(exchange='', routing_key=AGENT_QUEUE, body=json.dumps(reply))
+            self.envConnector.sendMessageToAgent(properties, reply)
+
+
 
 
             
@@ -100,7 +101,7 @@ class MyGame(arcade.Window):
 
     def setup(self):
         """Настройка игры (вызывается после инициализации окна)"""
-        self.envConnector = MLEnvConnector(RABBITMQ_HOST, AGENT_QUEUE, ENV_REPLY_QUEUE)
+        self.envConnector = MLEnvConnector(RABBITMQ_HOST,  ENV_QUEUE)
         self.envConnector.connect()
         self.envConnector.startConsumingThread(self.messageCallback)
         arcade.schedule(self.process_messages, 0.05)  # Опрашиваем очередь RabbitMQ каждые 50мс

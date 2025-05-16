@@ -1,12 +1,11 @@
-from 
+from LibForRabbitMQ.Connectors import MLAgentConnector
 import time
 import sys
 import json
 
 # Настройки RabbitMQ
 RABBITMQ_HOST = 'localhost'
-AGENT_QUEUE = 'direction_queue'
-ENV_REPLY_QUEUE = 'ball_position_queue'
+ENV_QUEUE = 'env_eueue'
 
 # Кодировка направлений
 UP = 0
@@ -31,18 +30,27 @@ def get_user_input():
             print("Invalid command.")
 
 # Создаем экземпляр коннектора
-agent_connector = Connectors.MLAgentConnector(RABBITMQ_HOST, AGENT_QUEUE, ENV_REPLY_QUEUE)
+agent_connector = MLAgentConnector(RABBITMQ_HOST, ENV_QUEUE)
 agent_connector.connect()
 
 
                 
 
 def runEpisode():
-    agent_connector.sendStart()
+    agent_connector.send_start_and_wait_reply()
 
-    while self.response is None:
-            self.connection.process_data_events(time_limit=None)
-    
+    cur_x = int(agent_connector.last_message['x'])
+    cur_y = int(agent_connector.last_message['y'])
+    direction = Q(cur_x, cur_y)
+    agent_connector.send_step_and_wait_reply(direction)
+
+    while (True):
+        cur_x = int(agent_connector.last_message['x'])
+        cur_y = int(agent_connector.last_message['y'])
+        direction = Q(cur_x, cur_y)
+        agent_connector.send_step_and_wait_reply(direction)
+
+
 
 def main():
     """Главная функция, управляющая началом раундов."""
