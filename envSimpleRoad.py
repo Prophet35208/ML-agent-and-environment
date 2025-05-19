@@ -16,7 +16,7 @@ HEIGHT = 600
 TITLE = "SimpleRoadEnv"
 BACKGROUND_COLOR = arcade.color.WHITE
 BALL_RADIUS = 20
-BALL_COLOR = arcade.color.BLUE
+BALL_COLOR = arcade.color.AMERICAN_ROSE
 BALL_SPEED = 10  # Скорость движения шара
 
 # Начальная позиция шара
@@ -30,27 +30,45 @@ ROAD_X = WIDTH // 2  # Центр дороги по X
 ROAD_Y = HEIGHT // 2  # Центр дороги по Y
 ROAD_COLOR = arcade.color.GRAY
 
+# Настройки границ дороги
+BORDER_WIDTH = 5
+
+# Флаг
+FLAG_IMAGE_PATH = "Environment/Images/flag.png"
+FLAG_SKALE = 0.1
+
+# Причины перезапуска (ресетов)
+RESET_CAUSE_OUT_OF_ROAD = 1
+RESET_CAUSE_REACHED_FINISH = 2
+
+# Настройки вознограждений
+REWARD_GET_CLOSER = 1
+REWARD_GET_FURTHER = -1
+REWARD_GET_OFF_ROAD = -10
+REWARD_REACHED_FLAG = 10
+
 # Настройки RabbitMQ
 RABBITMQ_HOST = 'localhost'
 ENV_QUEUE = 'env_eueue'
-
-
 
 class MyGame(arcade.Window):
     def __init__(self, width, height, title):
         super().__init__(width, height, title)
         arcade.set_background_color(BACKGROUND_COLOR)
 
-        self.ball_x = BALL_START_X
-        self.ball_y = BALL_START_Y
-        self.direction_queue = []  # Очередь для хранения полученных направлений
+        self.ball = None  # Спрайт шара
+        self.ball_sprite_list = arcade.SpriteList()
 
-        # Добавляем спрайт дороги
-        self.road = arcade.Sprite(None, 1, hit_box_algorithm="None") # Не используем изображение, создадим прямоугольник
-        self.road.width = ROAD_WIDTH
-        self.road.height = ROAD_HEIGHT
-        self.road.center_x = ROAD_X
-        self.road.center_y = ROAD_Y
+        # Добавляем дорогу
+        self.road = None
+        self.road_sprite_list = arcade.SpriteList()
+        self.borders_sprite_list = arcade.SpriteList()
+
+        # Добавляем флаг
+        self.road = None
+        self.flag_sprite_list = arcade.SpriteList()
+
+        self.direction_queue = []  # Очередь для хранения полученных направлений
 
     # Этот обработчик вызывается, когда мы получаем сообщение от агента
     # Имеется несколько типов сообщений, определяемых по параметры type
@@ -63,40 +81,74 @@ class MyGame(arcade.Window):
         mType = message['type']
         # Старт
         if (mType == 0):
-            x = self.ball_x 
-            y = self.ball_y
-            reply = {'x': x, 'y': y}
+            x = self.ball.center_x
+            y = self.ball.center_y
+            reply = {'reset': 0 ,'x': x, 'y': y}
             self.envConnector.sendMessageToAgent(properties, reply)
         if (mType == 1):
-            while(self.direction_queue):
-                time.sleep(0.06)
-            xAfterStep = self.ball_x
-            yAfterStep = self.ball_y
             dir = int(message['direction'])
-            if (dir == UP):
-                yAfterStep = yAfterStep + BALL_SPEED
-            if (dir == RIGHT):
-                xAfterStep = xAfterStep + BALL_SPEED
-            if (dir == DOWN):
-                yAfterStep = yAfterStep - BALL_SPEED
-            if (dir == LEFT):
-                xAfterStep = xAfterStep - BALL_SPEED
 
-            # Далее нужно посмотреть, нужно ли ресетить
+            previous_x = self.ball.center_x
+            previous_y = self.ball.center_y
 
-            # Далее передаём новые координаты в очередь на регистрацию средой (direction_queue)
-            self.direction_queue.append(dir)
-            # После этого отправляем сообщение агенту про следующие координаты
-            reply = {'reset': 0, 'x': xAfterStep, 'y': yAfterStep}
-            self.envConnector.sendMessageToAgent(properties, reply)
+            self.move_ball(dir)
 
+            current_x = self.ball.center_x
+            current_y = self.ball.center_y
 
-
-
+            # Далее нужно посмотреть, нужно ли ресетить. Мячик мы подвинули, теперь смотрим коллизии
+            # Если вышел за пределы дороги
+            reset = False
+            road_collision = self.ball.collides_with_list(self.borders_sprite_list)
+            if road_collision:
+                # Коллизия имеется
+                reset = True
+                # Возвращаем мяч в начало
+                self.reset_ball_position()
+                # Отправляем сообщение 
+                reply = {'reset': 1 , 'reset_cause': RESET_CAUSE_OUT_OF_ROAD, 'x': current_x, 'y': current_y, 'reward': REWARD_GET_OFF_ROAD}
+                self.envConnector.sendMessageToAgent(properties, reply)
             
-                
+            # Если дошёл до финиша
+            finish_collision = self.ball.collides_with_list(self.flag_sprite_list)
+            if finish_collision:
+                # Коллизия имеется
+                reset = True
+                # Возвращаем мяч в начало
+                self.reset_ball_position()
+                # Отправляем сообщение 
+                reply = {'reset': 1 , 'reset_cause': RESET_CAUSE_REACHED_FINISH, 'x': current_x, 'y': current_y, 'reward': REWARD_REACHED_FLAG}
+                self.envConnector.sendMessageToAgent(properties, reply)
 
-    
+            # После этого отправляем сообщение агенту про следующие координаты, если не нужно перезапускать среду
+            # Так же не забываем про вознаграждение для агента
+            if not reset:
+                # Вычисляем вознограждение
+                reward = None
+
+                if (dir == UP or dir == DOWN):
+                    distance_prev_y = abs(previous_y - self.flag.center_y)
+                    distance_cur_y = abs(current_y - self.flag.center_y)
+                    if (distance_prev_y > distance_cur_y):
+                        reward = REWARD_GET_CLOSER
+                    if (distance_prev_y < distance_cur_y):
+                        reward = REWARD_GET_FURTHER
+                    if (distance_prev_y == distance_cur_y):
+                        reward = 0
+
+                if (dir == LEFT or dir == RIGHT):
+                    distance_prev_x = abs(previous_x - self.flag.center_x)
+                    distance_cur_x = abs(previous_x - self.flag.center_x)
+                    if (distance_prev_x > distance_cur_x):
+                        reward = REWARD_GET_CLOSER
+                    if (distance_prev_x < distance_cur_x):
+                        reward = REWARD_GET_FURTHER
+                    if (distance_prev_x == distance_cur_x):
+                        reward = 0
+
+                # Отправляем сообщение
+                reply = {'reset': 0, 'x': current_x, 'y': current_y, 'reward':reward}
+                self.envConnector.sendMessageToAgent(properties, reply)
 
 
     def setup(self):
@@ -104,8 +156,57 @@ class MyGame(arcade.Window):
         self.envConnector = MLEnvConnector(RABBITMQ_HOST,  ENV_QUEUE)
         self.envConnector.connect()
         self.envConnector.startConsumingThread(self.messageCallback)
+
+        # Создаём спрайт шара
+        self.ball = arcade.SpriteCircle(BALL_RADIUS, BALL_COLOR)
+        self.ball.center_x = BALL_START_X
+        self.ball.center_y = BALL_START_Y
+        self.ball_sprite_list.append(self.ball)
+
+        self.road = arcade.SpriteSolidColor(ROAD_WIDTH, ROAD_HEIGHT,color= ROAD_COLOR)
+        self.road.center_x = ROAD_X
+        self.road.center_y = ROAD_Y
+        self.road_sprite_list.append(self.road)
+
+        # Создаем границы дороги
+        self.create_borders()
+
+        self.flag = arcade.Sprite(FLAG_IMAGE_PATH, FLAG_SKALE)  # Scale the image
+        self.flag.center_x = self.road.center_x + ROAD_WIDTH / 2 - 25  # Размещаем флаг в конце дороги.
+        self.flag.center_y = self.road.center_y
+        self.flag_sprite_list.append(self.flag)
+
         arcade.schedule(self.process_messages, 0.05)  # Опрашиваем очередь RabbitMQ каждые 50мс
 
+    def reset_ball_position(self):
+        self.ball.center_x = BALL_START_X
+        self.ball.center_y = BALL_START_Y
+
+    def create_borders(self):
+        """Создаёт границы дороги."""
+        # Левая граница
+        border_left = arcade.SpriteSolidColor(BORDER_WIDTH, ROAD_HEIGHT, color = arcade.color.RED)
+        border_left.center_x = self.road.center_x - ROAD_WIDTH / 2 - BORDER_WIDTH / 2
+        border_left.center_y = self.road.center_y
+        self.borders_sprite_list.append(border_left)
+
+        # Правая граница
+        border_right = arcade.SpriteSolidColor(BORDER_WIDTH, ROAD_HEIGHT, color = arcade.color.RED)
+        border_right.center_x = self.road.center_x + ROAD_WIDTH / 2 + BORDER_WIDTH / 2
+        border_right.center_y = self.road.center_y
+        self.borders_sprite_list.append(border_right)
+
+        # Верхняя граница
+        border_top = arcade.SpriteSolidColor(ROAD_WIDTH, BORDER_WIDTH, color = arcade.color.RED)
+        border_top.center_x = self.road.center_x
+        border_top.center_y = self.road.center_y + ROAD_HEIGHT / 2 + BORDER_WIDTH / 2
+        self.borders_sprite_list.append(border_top)
+
+        # Нижняя граница
+        border_bottom = arcade.SpriteSolidColor(ROAD_WIDTH, BORDER_WIDTH, color = arcade.color.RED)
+        border_bottom.center_x = self.road.center_x
+        border_bottom.center_y = self.road.center_y - ROAD_HEIGHT / 2 - BORDER_WIDTH / 2
+        self.borders_sprite_list.append(border_bottom)
 
     def process_messages(self, delta_time):
         """Обрабатывает сообщения из очереди."""
@@ -116,23 +217,27 @@ class MyGame(arcade.Window):
     def on_draw(self):
         """Вызывается для отрисовки сцены."""
         self.clear()
-        arcade.draw_rect_filled(arcade.rect.XYWH(self.road.center_x, self.road.center_y, self.road.width, self.road.height), ROAD_COLOR)
-        arcade.draw_circle_filled(self.ball_x, self.ball_y, BALL_RADIUS, BALL_COLOR)
+        self.road_sprite_list.draw()
+        self.ball_sprite_list.draw()  # Рисуем шар
+        self.borders_sprite_list.draw()
+        self.flag_sprite_list.draw()
+        #arcade.draw_rect_filled(arcade.rect.XYWH(self.road.center_x, self.road.center_y, self.road.width, self.road.height), ROAD_COLOR)
+        #arcade.draw_circle_filled(self.ball_x, self.ball_y, BALL_RADIUS, BALL_COLOR)
 
     def move_ball(self, direction):
         """Перемещает шар в заданном направлении."""
         if direction == UP:
-            self.ball_y += BALL_SPEED
+            self.ball.center_y += BALL_SPEED
         elif direction == DOWN:
-            self.ball_y -= BALL_SPEED
+            self.ball.center_y -= BALL_SPEED
         elif direction == LEFT:
-            self.ball_x -= BALL_SPEED
+            self.ball.center_x -= BALL_SPEED
         elif direction == RIGHT:
-            self.ball_x += BALL_SPEED
+            self.ball.center_x += BALL_SPEED
 
         # Ограничение шара в пределах окна
-        self.ball_x = max(BALL_RADIUS, min(self.ball_x, WIDTH - BALL_RADIUS))
-        self.ball_y = max(BALL_RADIUS, min(self.ball_y, HEIGHT - BALL_RADIUS))
+        self.ball.center_x = max(BALL_RADIUS, min(self.ball.center_x, WIDTH - BALL_RADIUS))
+        self.ball.center_y = max(BALL_RADIUS, min(self.ball.center_y, HEIGHT - BALL_RADIUS))
 
     def update(self, delta_time):
         """Вызывается для обновления логики игры (не используется в данном случае)."""
