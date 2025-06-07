@@ -13,22 +13,37 @@ LEFT = 3
 # Настройки Arcade
 WIDTH = 1000
 HEIGHT = 600
-TITLE = "SimpleRoadEnv"
+TITLE = "HarderRoadEnv"
 BACKGROUND_COLOR = arcade.color.WHITE
 BALL_RADIUS = 20
 BALL_COLOR = arcade.color.AMERICAN_ROSE
 BALL_SPEED = 10  # Скорость движения шара
 
-# Начальная позиция шара
-BALL_START_X = WIDTH // 10
-BALL_START_Y = HEIGHT // 2
+
 
 # Дорога 
-ROAD_WIDTH = WIDTH - 30
 ROAD_HEIGHT = 70
+
+CENTER_ROAD_HEIGHT = 400
+CENTER_ROAD_X = WIDTH // 2 -13
+CENTER_ROAD_Y = HEIGHT // 2
+
+
+UP_ROAD_WIDTH = WIDTH // 2.25
+UP_ROAD_X = WIDTH - WIDTH // 4 - 20
+UP_ROAD_Y = HEIGHT- HEIGHT// 4 + 15
+
 ROAD_X = WIDTH // 2  # Центр дороги по X
 ROAD_Y = HEIGHT // 2  # Центр дороги по Y
+
+ROAD_START_X = 20
+ROAD_START_Y = 50
+
 ROAD_COLOR = arcade.color.GRAY
+
+# Начальная позиция шара
+BALL_START_X = WIDTH // 10
+BALL_START_Y = 90
 
 # Настройки границ дороги
 BORDER_WIDTH = 5
@@ -41,11 +56,15 @@ FLAG_SKALE = 0.1
 RESET_CAUSE_OUT_OF_ROAD = 1
 RESET_CAUSE_REACHED_FINISH = 2
 
-# Настройки вознограждений
+# Настройки вознаграждений
 REWARD_GET_CLOSER = 1
 REWARD_GET_FURTHER = -1
 REWARD_GET_OFF_ROAD = -10
 REWARD_REACHED_FLAG = 10
+
+# Контрольные точки для расчёта вознограждения на сложной карте
+CONTROL_POINT_X = CENTER_ROAD_X - ROAD_HEIGHT/2 + 2
+CONTROL_POINT_Y = UP_ROAD_Y - ROAD_HEIGHT/2
 
 # Настройки RabbitMQ
 RABBITMQ_HOST = 'localhost'
@@ -68,6 +87,13 @@ class MyGame(arcade.Window):
         self.road = None
         self.flag_sprite_list = arcade.SpriteList()
 
+        self.road_segment_width = self.width // 2  # Ширина первого сегмента дороги
+        self.road_segment_height = self.height // 2 # Высота второго сегмента дороги
+        self.road_start_x = BORDER_WIDTH + ROAD_START_X  # Начальная точка X дороги, отступ слева
+        self.road_start_y = BORDER_WIDTH + ROAD_START_Y # Начальная точка Y дороги, отступ снизу
+        self.road_end_y = self.height - 30 # Конечная точка по оси Y
+
+        self.direction_queue = []  # Очередь для хранения полученных направлений
 
     # Этот обработчик вызывается, когда мы получаем сообщение от агента
     # Имеется несколько типов сообщений, определяемых по параметры type
@@ -118,6 +144,7 @@ class MyGame(arcade.Window):
                 # Отправляем сообщение 
                 reply = {'reset': 1 , 'reset_cause': RESET_CAUSE_REACHED_FINISH, 'x': current_x, 'y': current_y, 'reward': REWARD_REACHED_FLAG}
                 self.envConnector.sendMessageToAgent(properties, reply)
+                print("\nМяч дошёл до флага.\n")
 
             # После этого отправляем сообщение агенту про следующие координаты, если не нужно перезапускать среду
             # Так же не забываем про вознаграждение для агента
@@ -125,26 +152,30 @@ class MyGame(arcade.Window):
                 # Вычисляем вознограждение
                 reward = None
 
-                if (dir == UP or dir == DOWN):
-                    distance_prev_y = abs(previous_y - self.flag.center_y)
-                    distance_cur_y = abs(current_y - self.flag.center_y)
-                    if (distance_prev_y > distance_cur_y):
-                        reward = REWARD_GET_CLOSER
-                    if (distance_prev_y < distance_cur_y):
-                        reward = REWARD_GET_FURTHER
-                    if (distance_prev_y == distance_cur_y):
+                if (previous_x < CONTROL_POINT_X):
+                    if (dir == UP or dir == DOWN):
                         reward = 0
-
-                if (dir == LEFT or dir == RIGHT):
-                    distance_prev_x = abs(previous_x - self.flag.center_x)
-                    distance_cur_x = abs(previous_x - self.flag.center_x)
-                    if (distance_prev_x > distance_cur_x):
-                        reward = REWARD_GET_CLOSER
-                    if (distance_prev_x < distance_cur_x):
+                    if (dir == LEFT):
                         reward = REWARD_GET_FURTHER
-                    if (distance_prev_x == distance_cur_x):
-                        reward = 0
+                    if (dir == RIGHT):
+                        reward = REWARD_GET_CLOSER
 
+                if (previous_x > CONTROL_POINT_X and previous_y < CONTROL_POINT_Y):
+                    if (dir == LEFT or dir == RIGHT):
+                        reward = 0
+                    if (dir == UP):
+                        reward = REWARD_GET_CLOSER
+                    if (dir == DOWN):
+                        reward = REWARD_GET_FURTHER
+
+                if (previous_y >= CONTROL_POINT_Y):
+                    if (dir == UP or dir == DOWN):
+                        reward = 0
+                    if (dir == LEFT):
+                        reward = REWARD_GET_FURTHER
+                    if (dir == RIGHT):
+                        reward = REWARD_GET_CLOSER
+                    
                 # Отправляем сообщение
                 reply = {'reset': 0, 'x': current_x, 'y': current_y, 'reward':reward}
                 self.envConnector.sendMessageToAgent(properties, reply)
@@ -152,6 +183,9 @@ class MyGame(arcade.Window):
 
     def setup(self):
         """Настройка игры (вызывается после инициализации окна)"""
+        self.envConnector = MLEnvConnector(RABBITMQ_HOST,  ENV_QUEUE)
+        self.envConnector.connect()
+        self.envConnector.startConsumingThread(self.messageCallback)
 
         # Создаём спрайт шара
         self.ball = arcade.SpriteCircle(BALL_RADIUS, BALL_COLOR)
@@ -159,22 +193,17 @@ class MyGame(arcade.Window):
         self.ball.center_y = BALL_START_Y
         self.ball_sprite_list.append(self.ball)
 
-        self.road = arcade.SpriteSolidColor(ROAD_WIDTH, ROAD_HEIGHT,color= ROAD_COLOR)
-        self.road.center_x = ROAD_X
-        self.road.center_y = ROAD_Y
-        self.road_sprite_list.append(self.road)
 
         # Создаем границы дороги
         self.create_borders()
+        self.create_road()
 
         self.flag = arcade.Sprite(FLAG_IMAGE_PATH, FLAG_SKALE)  # Scale the image
-        self.flag.center_x = self.road.center_x + ROAD_WIDTH / 2 - 25  # Размещаем флаг в конце дороги.
-        self.flag.center_y = self.road.center_y
+        self.flag.center_x = UP_ROAD_X + UP_ROAD_WIDTH / 2 - 25 # Размещаем флаг в конце дороги. Используем UP_ROAD_X и UP_ROAD_WIDTH
+        self.flag.center_y = UP_ROAD_Y
         self.flag_sprite_list.append(self.flag)
 
-        self.envConnector = MLEnvConnector(RABBITMQ_HOST,  ENV_QUEUE)
-        self.envConnector.connect()
-        self.envConnector.startConsumingThread(self.messageCallback)
+        arcade.schedule(self.process_messages, 0.05)  # Опрашиваем очередь RabbitMQ каждые 50мс
 
     def reset_ball_position(self):
         self.ball.center_x = BALL_START_X
@@ -182,30 +211,86 @@ class MyGame(arcade.Window):
 
     def create_borders(self):
         """Создаёт границы дороги."""
-        # Левая граница
-        border_left = arcade.SpriteSolidColor(BORDER_WIDTH, ROAD_HEIGHT, color = arcade.color.RED)
-        border_left.center_x = self.road.center_x - ROAD_WIDTH / 2 - BORDER_WIDTH / 2
-        border_left.center_y = self.road.center_y
-        self.borders_sprite_list.append(border_left)
+         # Границы первого сегмента (horizontal)
+        border_left1 = arcade.SpriteSolidColor(BORDER_WIDTH, ROAD_HEIGHT, color = arcade.color.RED)
+        border_left1.center_x = ROAD_START_X - BORDER_WIDTH / 2 + 4
+        border_left1.center_y = ROAD_START_Y + ROAD_HEIGHT / 2 + 5
+        self.borders_sprite_list.append(border_left1)
 
-        # Правая граница
-        border_right = arcade.SpriteSolidColor(BORDER_WIDTH, ROAD_HEIGHT, color = arcade.color.RED)
-        border_right.center_x = self.road.center_x + ROAD_WIDTH / 2 + BORDER_WIDTH / 2
-        border_right.center_y = self.road.center_y
-        self.borders_sprite_list.append(border_right)
+        border_bottom1 = arcade.SpriteSolidColor(self.road_segment_width - 2, BORDER_WIDTH, color = arcade.color.RED)
+        border_bottom1.center_x = ROAD_START_X + self.road_segment_width / 2 + 3
+        border_bottom1.center_y = ROAD_START_Y - BORDER_WIDTH / 2 + 5
+        self.borders_sprite_list.append(border_bottom1)
 
-        # Верхняя граница
-        border_top = arcade.SpriteSolidColor(ROAD_WIDTH, BORDER_WIDTH, color = arcade.color.RED)
-        border_top.center_x = self.road.center_x
-        border_top.center_y = self.road.center_y + ROAD_HEIGHT / 2 + BORDER_WIDTH / 2
-        self.borders_sprite_list.append(border_top)
+        border_top1 = arcade.SpriteSolidColor(self.road_segment_width - ROAD_HEIGHT, BORDER_WIDTH, color = arcade.color.RED)
+        border_top1.center_x = ROAD_START_X + self.road_segment_width / 2 - 33
+        border_top1.center_y = ROAD_START_Y + ROAD_HEIGHT + BORDER_WIDTH / 2 +5
+        self.borders_sprite_list.append(border_top1)
 
-        # Нижняя граница
-        border_bottom = arcade.SpriteSolidColor(ROAD_WIDTH, BORDER_WIDTH, color = arcade.color.RED)
-        border_bottom.center_x = self.road.center_x
-        border_bottom.center_y = self.road.center_y - ROAD_HEIGHT / 2 - BORDER_WIDTH / 2
-        self.borders_sprite_list.append(border_bottom)
+        # Границы второго сегмента (vertical)
+        border_left2 = arcade.SpriteSolidColor(BORDER_WIDTH, CENTER_ROAD_HEIGHT - 30, color = arcade.color.RED)
+        border_left2.center_x = CENTER_ROAD_X - ROAD_HEIGHT / 2 - BORDER_WIDTH / 2  # Center road x это центр дороги, road_height это ширина границы
+        border_left2.center_y = CENTER_ROAD_Y + 15
+        self.borders_sprite_list.append(border_left2)
 
+        border_right2 = arcade.SpriteSolidColor(BORDER_WIDTH, CENTER_ROAD_HEIGHT- 20, color = arcade.color.RED)
+        border_right2.center_x = CENTER_ROAD_X + ROAD_HEIGHT / 2 + BORDER_WIDTH / 2  # Center road x это центр дороги, road_height это ширина границы
+        border_right2.center_y = CENTER_ROAD_Y - ROAD_HEIGHT + 10
+        self.borders_sprite_list.append(border_right2)
+
+        # Границы третьего сегмента (horizontal, top)
+        border_top3 = arcade.SpriteSolidColor(UP_ROAD_WIDTH + ROAD_HEIGHT - 10, BORDER_WIDTH, color = arcade.color.RED)
+        border_top3.center_x = UP_ROAD_X - 30
+        border_top3.center_y = UP_ROAD_Y + ROAD_HEIGHT / 2 + BORDER_WIDTH / 2
+        self.borders_sprite_list.append(border_top3)
+
+        border_bottom3 = arcade.SpriteSolidColor(UP_ROAD_WIDTH - 19, BORDER_WIDTH, color = arcade.color.RED)
+        border_bottom3.center_x = UP_ROAD_X + 10
+        border_bottom3.center_y = UP_ROAD_Y - ROAD_HEIGHT / 2 - BORDER_WIDTH / 2
+        self.borders_sprite_list.append(border_bottom3)
+
+        border_right3 = arcade.SpriteSolidColor(BORDER_WIDTH, ROAD_HEIGHT, color = arcade.color.RED)
+        border_right3.center_x = UP_ROAD_X + UP_ROAD_WIDTH / 2 + BORDER_WIDTH / 2 # Добавил ширину
+        border_right3.center_y = UP_ROAD_Y
+        self.borders_sprite_list.append(border_right3)
+
+    def create_road(self):
+        # Первый сегмент: слева внизу -> вправо
+        road_segment1 = arcade.SpriteSolidColor(
+            self.road_segment_width,  
+            ROAD_HEIGHT,
+            color=ROAD_COLOR
+        )
+        road_segment1.center_x = self.road_start_x + (self.road_segment_width - BORDER_WIDTH) // 2
+        road_segment1.center_y = self.road_start_y + ROAD_HEIGHT // 2
+        self.road_sprite_list.append(road_segment1)
+
+        # Второй сегмент: вверх
+        road_segment2 = arcade.SpriteSolidColor(
+            ROAD_HEIGHT,
+            CENTER_ROAD_HEIGHT,
+            color=ROAD_COLOR
+        )
+        road_segment2.center_x = CENTER_ROAD_X
+        road_segment2.center_y = CENTER_ROAD_Y
+        self.road_sprite_list.append(road_segment2)
+
+        # Третий сегмент: вправо
+        road_segment3 = arcade.SpriteSolidColor(
+            UP_ROAD_WIDTH,  # Учитываем границы и отступ справа
+            ROAD_HEIGHT,
+            color=ROAD_COLOR
+        )
+        road_segment3.center_x = UP_ROAD_X
+        road_segment3.center_y = UP_ROAD_Y
+        self.road_sprite_list.append(road_segment3)
+
+
+    def process_messages(self, delta_time):
+        """Обрабатывает сообщения из очереди."""
+        while self.direction_queue:
+            direction = self.direction_queue.pop(0)
+            self.move_ball(direction)
 
     def on_draw(self):
         """Вызывается для отрисовки сцены."""
@@ -216,6 +301,7 @@ class MyGame(arcade.Window):
         self.flag_sprite_list.draw()
         #arcade.draw_rect_filled(arcade.rect.XYWH(self.road.center_x, self.road.center_y, self.road.width, self.road.height), ROAD_COLOR)
         #arcade.draw_circle_filled(self.ball_x, self.ball_y, BALL_RADIUS, BALL_COLOR)
+        #arcade.draw_point(CENTER_ROAD_X - ROAD_HEIGHT/2 + 10,UP_ROAD_Y - ROAD_HEIGHT/2,(0, 255, 0),10)
 
     def move_ball(self, direction):
         """Перемещает шар в заданном направлении."""
@@ -235,6 +321,13 @@ class MyGame(arcade.Window):
     def update(self, delta_time):
         """Вызывается для обновления логики игры (не используется в данном случае)."""
         pass
+
+    def on_key_press(self, key, modifiers):
+        """Вызывается при нажатии клавиши."""
+        if key == arcade.key.ESCAPE:
+            # Возвращаем мяч на начальную позицию
+            self.ball.center_x = BALL_START_X
+            self.ball.center_y = BALL_START_Y
 
 def main():
     game = MyGame(WIDTH, HEIGHT, TITLE)

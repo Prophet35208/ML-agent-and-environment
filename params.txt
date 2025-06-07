@@ -1,0 +1,4 @@
+learning_rate = 0.01
+n_episodes = 50000
+start_epsilon = 1.0
+time_betw_steps = 0
